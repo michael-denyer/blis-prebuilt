@@ -1,0 +1,133 @@
+name: Build BLIS ILP64
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+            blis_config: haswell
+            artifact: libblis-x86_64.so
+          - os: macos-14
+            arch: arm64
+            blis_config: firestorm
+            artifact: libblis-firestorm.dylib
+          - os: macos-13
+            arch: x86_64
+            blis_config: haswell
+            artifact: libblis-haswell.dylib
+
+    runs-on: ${{ matrix.os }}
+    name: BLIS ILP64 (${{ matrix.os }}, ${{ matrix.arch }})
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone BLIS
+        run: git clone --depth 1 https://github.com/flame/blis.git
+
+      - name: Configure BLIS (ILP64)
+        working-directory: blis
+        run: |
+          # -b 64: BLAS/CBLAS interface uses 64-bit integers (exports dgemm64_)
+          # -i 64: internal BLIS integer size is 64-bit
+          # --enable-shared: build shared library
+          # --disable-static: skip static library
+          ./configure \
+            -b 64 \
+            -i 64 \
+            --enable-shared \
+            --disable-static \
+            --enable-cblas \
+            --prefix=$PWD/../install \
+            ${{ matrix.blis_config }}
+
+      - name: Build BLIS
+        working-directory: blis
+        run: make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+
+      - name: Install BLIS
+        working-directory: blis
+        run: make install
+
+      - name: Verify ILP64 symbols
+        run: |
+          echo "=== Checking for ILP64 dgemm symbols ==="
+          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
+            LIB=$(find install/lib -name 'libblis.so*' -not -type l | head -1)
+            nm -D "$LIB" | grep -i dgemm || true
+            # Must have dgemm64_ (ILP64 BLAS symbol)
+            nm -D "$LIB" | grep -q 'dgemm64_' || { echo "FATAL: dgemm64_ not found"; exit 1; }
+            echo "=== Checking cblas ==="
+            nm -D "$LIB" | grep -i cblas_dgemm || true
+          else
+            LIB=$(find install/lib -name 'libblis.dylib' | head -1)
+            nm -g "$LIB" | grep -i dgemm || true
+            nm -g "$LIB" | grep -q 'dgemm64_' || { echo "FATAL: dgemm64_ not found"; exit 1; }
+            echo "=== Checking cblas ==="
+            nm -g "$LIB" | grep -i cblas_dgemm || true
+          fi
+          echo "=== ILP64 symbols verified ==="
+
+      - name: Package artifact
+        run: |
+          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
+            LIB=$(find install/lib -name 'libblis.so*' -not -type l | head -1)
+            cp "$LIB" "${{ matrix.artifact }}"
+          else
+            LIB=$(find install/lib -name 'libblis.dylib' | head -1)
+            cp "$LIB" "${{ matrix.artifact }}"
+            # Set generic install_name for bundling
+            install_name_tool -id "@loader_path/libs/libblis.dylib" "${{ matrix.artifact }}"
+          fi
+          echo "Artifact: ${{ matrix.artifact }}"
+          ls -lh "${{ matrix.artifact }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+          REPO_NAME: ${{ github.repository }}
+        run: |
+          # Flatten artifact directories
+          mkdir -p release
+          find artifacts -type f -name 'libblis*' -exec cp {} release/ \;
+          ls -lh release/
+
+          gh release create "$TAG_NAME" \
+            --repo "$REPO_NAME" \
+            --title "BLIS ILP64 $TAG_NAME" \
+            --notes "Pre-built BLIS shared libraries with ILP64 (64-bit integer) BLAS interface.
+
+          Built with \`-b 64 -i 64\` — exports \`dgemm64_\` symbol for ILP64 dispatch.
+
+          ## Assets
+          - \`libblis-x86_64.so\` — Linux x86_64 (haswell config)
+          - \`libblis-firestorm.dylib\` — macOS Apple Silicon (firestorm config)
+          - \`libblis-haswell.dylib\` — macOS Intel (haswell config)" \
+            release/*
