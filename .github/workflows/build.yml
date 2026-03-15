@@ -36,7 +36,9 @@ jobs:
       - name: Configure BLIS (ILP64)
         working-directory: blis
         run: |
-          # -b 64: BLAS/CBLAS interface uses 64-bit integers (exports dgemm64_)
+          # -b 64: BLAS/CBLAS interface uses 64-bit integers
+          #   NOTE: same symbol names (dgemm_, cblas_dgemm) but with 64-bit int args.
+          #   jamma's blas_dispatch.c detects this via bli_info_get_int_type_size().
           # -i 64: internal BLIS integer size is 64-bit
           # --enable-shared: build shared library
           # --disable-static: skip static library
@@ -57,24 +59,28 @@ jobs:
         working-directory: blis
         run: make install
 
-      - name: Verify ILP64 symbols
+      - name: Verify ILP64 build
         run: |
-          echo "=== Checking for ILP64 dgemm symbols ==="
+          echo "=== Verifying BLIS ILP64 build ==="
           if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
             LIB=$(find install/lib -name 'libblis.so*' -not -type l | head -1)
-            nm -D "$LIB" | grep -i dgemm || true
-            # Must have dgemm64_ (ILP64 BLAS symbol)
-            nm -D "$LIB" | grep -q 'dgemm64_' || { echo "FATAL: dgemm64_ not found"; exit 1; }
-            echo "=== Checking cblas ==="
-            nm -D "$LIB" | grep -i cblas_dgemm || true
+            NM_CMD="nm -D"
           else
             LIB=$(find install/lib -name 'libblis.dylib' | head -1)
-            nm -g "$LIB" | grep -i dgemm || true
-            nm -g "$LIB" | grep -q 'dgemm64_' || { echo "FATAL: dgemm64_ not found"; exit 1; }
-            echo "=== Checking cblas ==="
-            nm -g "$LIB" | grep -i cblas_dgemm || true
+            NM_CMD="nm -g"
           fi
-          echo "=== ILP64 symbols verified ==="
+          echo "Library: $LIB"
+          echo "=== BLAS symbols ==="
+          $NM_CMD "$LIB" | grep -i 'dgemm\|dsyrk' || true
+          echo "=== BLIS info symbols ==="
+          $NM_CMD "$LIB" | grep 'bli_info_get_int_type_size' \
+            || { echo "FATAL: bli_info_get_int_type_size not found"; exit 1; }
+          echo "=== CBLAS symbols ==="
+          $NM_CMD "$LIB" | grep -i cblas_dgemm || true
+          echo "=== dgemm_ present (BLIS -b 64 uses same name, 64-bit int ABI) ==="
+          $NM_CMD "$LIB" | grep -q ' T.*dgemm_' \
+            || { echo "FATAL: dgemm_ not found"; exit 1; }
+          echo "=== Verification passed ==="
 
       - name: Package artifact
         run: |
@@ -124,7 +130,8 @@ jobs:
             --title "BLIS ILP64 $TAG_NAME" \
             --notes "Pre-built BLIS shared libraries with ILP64 (64-bit integer) BLAS interface.
 
-          Built with \`-b 64 -i 64\` — exports \`dgemm64_\` symbol for ILP64 dispatch.
+          Built with \`-b 64 -i 64\`. Symbol names are unchanged (\`dgemm_\`, \`cblas_dgemm\`)
+          but use 64-bit integer parameters. jamma detects this via \`bli_info_get_int_type_size()\`.
 
           ## Assets
           - \`libblis-x86_64.so\` — Linux x86_64 (haswell config)
