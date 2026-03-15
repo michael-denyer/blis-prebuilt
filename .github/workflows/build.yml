@@ -98,68 +98,8 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
 
-  # Intel Mac cross-compile on arm64 runner via Rosetta
-  build-intel-mac:
-    runs-on: macos-14
-    name: BLIS ILP64 (macos-14 x86_64 cross)
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Clone BLIS
-        run: git clone --depth 1 https://github.com/flame/blis.git
-
-      - name: Configure BLIS (ILP64, x86_64 cross-compile)
-        working-directory: blis
-        run: |
-          # Cross-compile for x86_64 on arm64 runner
-          # Use CC with -arch x86_64 and target haswell config
-          CC="clang -arch x86_64" ./configure \
-            -b 64 \
-            -i 64 \
-            --enable-shared \
-            --disable-static \
-            --enable-cblas \
-            --prefix=$PWD/../install \
-            haswell
-
-      - name: Build BLIS
-        working-directory: blis
-        run: make -j$(sysctl -n hw.ncpu) CC="clang -arch x86_64"
-
-      - name: Install BLIS
-        working-directory: blis
-        run: make install
-
-      - name: Verify ILP64 build
-        run: |
-          LIB=$(find install/lib -name 'libblis.dylib' | head -1)
-          echo "Library: $LIB"
-          file "$LIB"
-          # Verify it's x86_64
-          file "$LIB" | grep -q x86_64 || { echo "FATAL: not x86_64"; exit 1; }
-          nm -g "$LIB" | grep 'bli_info_get_int_type_size' \
-            || { echo "FATAL: bli_info_get_int_type_size not found"; exit 1; }
-          nm -g "$LIB" | grep -q ' T.*dgemm_' \
-            || { echo "FATAL: dgemm_ not found"; exit 1; }
-          echo "=== Verification passed ==="
-
-      - name: Package artifact
-        run: |
-          LIB=$(find install/lib -name 'libblis.dylib' | head -1)
-          cp "$LIB" libblis-haswell.dylib
-          install_name_tool -id "@loader_path/libs/libblis.dylib" libblis-haswell.dylib
-          echo "Artifact: libblis-haswell.dylib"
-          ls -lh libblis-haswell.dylib
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: libblis-haswell.dylib
-          path: libblis-haswell.dylib
-
   release:
-    needs: [build, build-intel-mac]
+    needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
@@ -189,8 +129,10 @@ jobs:
           Built with \`-b 64 -i 64\`. Symbol names are unchanged (\`dgemm_\`, \`cblas_dgemm\`)
           but use 64-bit integer parameters. jamma detects this via \`bli_info_get_int_type_size()\`.
 
+          Intel Mac (x86_64) is not included — macOS Accelerate provides ILP64 BLAS
+          natively via \`\$NEWLAPACK\$ILP64\` symbols (macOS 13.3+).
+
           ## Assets
           - \`libblis-x86_64.so\` — Linux x86_64 (haswell config)
-          - \`libblis-firestorm.dylib\` — macOS Apple Silicon (firestorm config)
-          - \`libblis-haswell.dylib\` — macOS Intel x86_64 (haswell config, cross-compiled)" \
+          - \`libblis-firestorm.dylib\` — macOS Apple Silicon (firestorm config)" \
             release/*
