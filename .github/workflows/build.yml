@@ -19,10 +19,6 @@ jobs:
             arch: arm64
             blis_config: firestorm
             artifact: libblis-firestorm.dylib
-          - os: macos-13
-            arch: x86_64
-            blis_config: haswell
-            artifact: libblis-haswell.dylib
 
     runs-on: ${{ matrix.os }}
     name: BLIS ILP64 (${{ matrix.os }}, ${{ matrix.arch }})
@@ -135,6 +131,5 @@ jobs:
 
           ## Assets
           - \`libblis-x86_64.so\` — Linux x86_64 (haswell config)
-          - \`libblis-firestorm.dylib\` — macOS Apple Silicon (firestorm config)
-          - \`libblis-haswell.dylib\` — macOS Intel (haswell config)" \
+          - \`libblis-firestorm.dylib\` — macOS Apple Silicon (firestorm config)" \
             release/*
